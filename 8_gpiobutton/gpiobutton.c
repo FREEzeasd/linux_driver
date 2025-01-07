@@ -3,6 +3,10 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/of.h>
+#include <linux/of_gpio.h>
+#include <linux/uaccess.h>
 
 #define DEVCNT 1
 #define DEVNAME "gpiobutton"
@@ -13,7 +17,13 @@ struct button_dev{
     int minor;
     struct cdev cdev;
 };
+struct button_gpio{
+    struct device_node *nd;
+    int id;
+    atomic_t keyvalue;
+};
 static struct button_dev button;
+static struct button_gpio gpio;
 static struct class *button_class;
 
 int button_open(struct inode *inode, struct file *file);
@@ -25,9 +35,35 @@ static const struct file_operations button_fops = {
     .release = button_release,
     .read = button_read,
 };
+
+static int gpio_button_init(void)
+{
+    gpio.nd = of_find_node_by_path("/gpiobutton");
+    if(gpio.nd == NULL)
+    {
+        printk(KERN_ERR "device node not found\r\n");
+        return -EINVAL;
+    }
+    gpio.id = of_get_named_gpio(gpio.nd,"button-gpio",0);
+    if(gpio.id < 0)
+    {
+        printk(KERN_ERR "GPIO not found\r\n");
+        return -EINVAL;
+    }
+    printk("get button GPIO: %d\r\n",gpio.id);
+
+    gpio_request(gpio.id,"button");
+    gpio_direction_input(gpio.id);
+    return 0;
+}   
+
 static int __init button_init(void)
 {
     int ret = 0;
+
+    ret = gpio_button_init();
+    atomic_set(&gpio.keyvalue,0);
+    if(ret < 0){ return ret; }
 
     /* 1. 申请设备号 */
     button.major = 0;
@@ -99,6 +135,17 @@ int button_release(struct inode *inode, struct file *file)
 }
 ssize_t button_read(struct file *file, char __user *buffer, size_t cnt, loff_t *pos)
 {
-    struct button_dev *button = file->private_data;
-    return 0;
+    //struct button_dev *button = file->private_data;
+    int ret = 0;
+    if(gpio_get_value(gpio.id) == 1)
+    {
+        while(!(gpio_get_value(gpio.id) == 1));
+        atomic_set(&gpio.keyvalue,'1');
+    }
+    else{
+        atomic_set(&gpio.keyvalue,'0');
+    }
+    char value = atomic_read(&gpio.keyvalue);
+    ret = copy_to_user(buffer,&value,sizeof(value));
+    return ret;
 }
